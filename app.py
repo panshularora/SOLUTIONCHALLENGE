@@ -32,7 +32,7 @@ init_db()
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
-@app.route('/api/auth/login', methods=['POST'])
+@app.route('/api/login', methods=['POST'])
 def login():
     data = request.get_json() or {}
     username = data.get('username')
@@ -53,7 +53,7 @@ def login():
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 
-@app.route('/api/assets/register', methods=['POST'])
+@app.route('/api/register', methods=['POST'])
 def register_asset():
     if 'image' not in request.files:
         return jsonify({"error": "No image provided"}), 400
@@ -104,8 +104,14 @@ def get_assets():
 
 # ── Scan ──────────────────────────────────────────────────────────────────────
 
-@app.route('/api/assets/<asset_id>/scan', methods=['POST'])
-def scan_asset(asset_id):
+@app.route('/api/scan', methods=['POST'])
+def scan_asset():
+    data = request.get_json() or {}
+    asset_id = data.get('asset_id')
+    
+    if not asset_id:
+        return jsonify({"error": "asset_id required"}), 400
+
     conn = get_db()
     asset = conn.execute("SELECT * FROM assets WHERE id = ?", (asset_id,)).fetchone()
     if not asset:
@@ -215,8 +221,8 @@ def get_violations():
     return jsonify([dict(r) for r in rows])
 
 
-@app.route('/api/violations/<id>', methods=['PUT'])
-def update_violation(id):
+@app.route('/api/violations/<id>/status', methods=['PATCH'])
+def update_violation_status(id):
     data = request.get_json() or {}
     status = data.get('status')
     if status not in ['OPEN', 'REVIEWING', 'RESOLVED']:
@@ -226,7 +232,7 @@ def update_violation(id):
     conn.execute("UPDATE violations SET status = ? WHERE id = ?", (status, id))
     conn.commit()
     conn.close()
-    return jsonify({"message": "Violation updated"})
+    return jsonify({"message": "Violation status updated"})
 
 
 if __name__ == '__main__':
