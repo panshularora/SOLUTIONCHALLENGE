@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+.env
+
+# SQLite databases
+*.db
+*.sqlite
+
+# Google credentials (NEVER commit)
+*credentials*.json
+google-*.json
+service-account*.json
+
+# ML model cache
+.cache/
+*.onnx
+*.pt
+
+# Node / Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
