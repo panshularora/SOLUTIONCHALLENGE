@@ -1,11 +1,6 @@
-Flask
-Werkzeug
-PyJWT
-Pillow
-ImageHash
-torch
-transformers
-google-cloud-vision
-numpy
-python-dotenv
+flask
 flask-cors
+imagehash
+Pillow
+requests
+python-dotenv

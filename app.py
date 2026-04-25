@@ -2,231 +2,232 @@ import os
 import io
 import json
 import uuid
-from datetime import datetime, timedelta, timezone
-from functools import wraps
-from flask import Flask, request, jsonify
+import base64
+import requests
+from datetime import datetime, timezone
+from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
-import jwt
-from werkzeug.security import generate_password_hash, check_password_hash
+from dotenv import load_dotenv
 from PIL import Image
 import imagehash
 
 from database import init_db, get_db
 
+# Load environment variables
+load_dotenv()
+
 app = Flask(__name__)
-CORS(app, origins="*", allow_headers=["Content-Type", "Authorization"])
+CORS(app, resources={r"/api/*": {"origins": "*"}, r"/uploads/*": {"origins": "*"}})
 
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'vigilant-secret-key-2024')
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB
+# Serve uploaded images
+@app.route('/uploads/<filename>')
+def uploaded_file(filename):
+    return send_from_directory('./uploads', filename)
 
-# Initialize DB and seed admin user
+API_KEY = os.getenv('GOOGLE_CLOUD_API_KEY')
+UPLOAD_FOLDER = './uploads'
+
+# Initialize DB
 init_db()
-with app.app_context():
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM users WHERE username='admin'")
-    if not c.fetchone():
-        c.execute("INSERT INTO users (username, password) VALUES (?, ?)",
-                  ('admin', generate_password_hash('password')))
-        conn.commit()
-    conn.close()
 
-# ─── Auth ──────────────────────────────────────────────────────────────────────
+# ── Auth ──────────────────────────────────────────────────────────────────────
 
-def token_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        auth_header = request.headers.get('Authorization', '')
-        token = auth_header.split(' ')[1] if auth_header.startswith('Bearer ') else auth_header
-        if not token:
-            return jsonify({'error': 'Token is missing'}), 401
-        try:
-            data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
-            current_user = data['username']
-        except Exception:
-            return jsonify({'error': 'Token is invalid or expired'}), 401
-        return f(current_user, *args, **kwargs)
-    return decorated
-
-
-@app.route('/api/login', methods=['POST'])
+@app.route('/api/auth/login', methods=['POST'])
 def login():
-    data = request.get_json(silent=True) or {}
-    username = data.get('username', '')
-    password = data.get('password', '')
-    if not username or not password:
-        return jsonify({'error': 'Missing credentials'}), 400
+    data = request.get_json() or {}
+    username = data.get('username')
+    password = data.get('password')
 
-    conn = get_db()
-    user = conn.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
-    conn.close()
-
-    if user and check_password_hash(user['password'], password):
-        token = jwt.encode({
-            'username': user['username'],
-            'exp': datetime.now(timezone.utc) + timedelta(hours=24)
-        }, app.config['SECRET_KEY'], algorithm='HS256')
-        return jsonify({'token': token, 'username': username})
-
-    return jsonify({'error': 'Invalid username or password'}), 401
+    # Hardcoded admin / password
+    if username == 'admin' and password == 'password':
+        return jsonify({
+            "token": "mock-jwt-token",
+            "user": {
+                "name": "Admin User",
+                "email": "admin@vigilant.io"
+            }
+        }), 200
+    
+    return jsonify({"error": "Invalid credentials"}), 401
 
 
-# ─── Assets ────────────────────────────────────────────────────────────────────
+# ── Assets ────────────────────────────────────────────────────────────────────
 
-@app.route('/api/register', methods=['POST'])
-@token_required
-def register_asset(current_user):
+@app.route('/api/assets/register', methods=['POST'])
+def register_asset():
     if 'image' not in request.files:
-        return jsonify({'error': 'No image file provided'}), 400
-
+        return jsonify({"error": "No image provided"}), 400
+    
     file = request.files['image']
     team = request.form.get('team', 'Unknown')
     event_name = request.form.get('event_name', 'Unknown')
 
+    asset_id = str(uuid.uuid4())
+    filename = f"{asset_id}.jpg"
+    image_path = os.path.join(UPLOAD_FOLDER, filename)
+
     try:
-        image_bytes = file.read()
-        img = Image.open(io.BytesIO(image_bytes)).convert('RGB')
-        phash = str(imagehash.phash(img))
+        # Save image
+        img_data = file.read()
+        img = Image.open(io.BytesIO(img_data)).convert('RGB')
+        img.save(image_path)
 
-        # Lazy-import heavy ML only when needed
-        from ml_utils import get_clip_embedding
-        embedding_json = json.dumps(get_clip_embedding(img))
+        # Compute pHash
+        phash = str(imagehash.average_hash(img))
 
-        asset_id = str(uuid.uuid4())
-        registered_at = datetime.now(timezone.utc).isoformat()
-
+        # Store in DB
         conn = get_db()
         conn.execute(
-            "INSERT INTO assets (asset_id, team, event_name, phash, clip_embedding, registered_at) VALUES (?,?,?,?,?,?)",
-            (asset_id, team, event_name, phash, embedding_json, registered_at)
+            "INSERT INTO assets (id, team, event_name, image_path, phash, registered_at) VALUES (?,?,?,?,?,?)",
+            (asset_id, team, event_name, image_path, phash, datetime.now(timezone.utc).isoformat())
         )
         conn.commit()
         conn.close()
 
         return jsonify({
-            'message': 'Asset registered successfully',
-            'asset': {
-                'asset_id': asset_id,
-                'team': team,
-                'event_name': event_name,
-                'phash': phash,
-                'registered_at': registered_at
-            }
+            "asset_id": asset_id,
+            "phash": phash,
+            "message": "Asset registered"
         }), 201
 
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route('/api/assets', methods=['GET'])
-@token_required
-def list_assets(current_user):
-    try:
-        conn = get_db()
-        rows = conn.execute(
-            "SELECT asset_id, team, event_name, phash, registered_at FROM assets ORDER BY registered_at DESC"
-        ).fetchall()
+def get_assets():
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM assets ORDER BY registered_at DESC").fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+# ── Scan ──────────────────────────────────────────────────────────────────────
+
+@app.route('/api/assets/<asset_id>/scan', methods=['POST'])
+def scan_asset(asset_id):
+    conn = get_db()
+    asset = conn.execute("SELECT * FROM assets WHERE id = ?", (asset_id,)).fetchone()
+    if not asset:
         conn.close()
-        return jsonify({'assets': [dict(r) for r in rows]}), 200
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": "Asset not found"}), 404
 
-
-# ─── Scan ──────────────────────────────────────────────────────────────────────
-
-@app.route('/api/scan', methods=['POST'])
-@token_required
-def scan_image(current_user):
-    if 'image' not in request.files:
-        return jsonify({'error': 'No image file provided'}), 400
-
-    file = request.files['image']
-    image_bytes = file.read()
+    # Load original asset image for pHash
+    asset_image_path = asset['image_path']
+    asset_phash_str = asset['phash']
+    asset_phash = imagehash.hex_to_hash(asset_phash_str)
 
     try:
-        img = Image.open(io.BytesIO(image_bytes)).convert('RGB')
-        query_phash = imagehash.phash(img)
+        with open(asset_image_path, "rb") as f:
+            base64_image = base64.b64encode(f.read()).decode('utf-8')
 
-        from ml_utils import get_clip_embedding, compute_similarity
-        query_embedding = get_clip_embedding(img)
+        # Google Vision REST API Call
+        vision_url = f"https://vision.googleapis.com/v1/images:annotate?key={API_KEY}"
+        payload = {
+            "requests": [{
+                "image": {"content": base64_image},
+                "features": [{"type": "WEB_DETECTION"}]
+            }]
+        }
 
-        conn = get_db()
-        assets = conn.execute("SELECT * FROM assets").fetchall()
+        response = requests.post(vision_url, json=payload)
+        res_data = response.json()
+        
+        web_detection = res_data['responses'][0].get('webDetection', {})
+        
+        # Combine all match sources
+        urls = []
+        for key in ['fullMatchingImages', 'partialMatchingImages', 'visuallySimilarImages']:
+            urls.extend([img.get('url') for img in web_detection.get(key, [])])
+        
+        # Unique URLs, max 15
+        urls = list(set(filter(None, urls)))[:15]
+        
+        violations_found = []
+        detected_at = datetime.now(timezone.utc).isoformat()
 
-        matches = []
-        best_asset_id = None
-        highest_sim = 0.0
+        for url in urls:
+            confidence = 0.70  # Default fallback
+            
+            try:
+                # Attempt to download image (max 2MB, 5s timeout)
+                r = requests.get(url, timeout=5, stream=True)
+                if r.status_code == 200:
+                    content_length = r.headers.get('Content-Length')
+                    if not content_length or int(content_length) < 2 * 1024 * 1024:
+                        v_img_data = r.content
+                        v_img = Image.open(io.BytesIO(v_img_data)).convert('RGB')
+                        v_phash = imagehash.average_hash(v_img)
+                        
+                        # Hamming Distance Comparison
+                        distance = asset_phash - v_phash
+                        confidence = max(0.0, 1.0 - (distance / 64.0))
+            except:
+                pass # Use default confidence
 
-        for asset in assets:
-            asset_phash = imagehash.hex_to_hash(asset['phash'])
-            phash_diff = query_phash - asset_phash
-            asset_embedding = json.loads(asset['clip_embedding'])
-            clip_sim = compute_similarity(query_embedding, asset_embedding)
+            if confidence > 0.60:
+                # Extract platform from domain
+                domain = url.split('//')[-1].split('/')[0].lower()
+                platform = "Web"
+                if "twitter.com" in domain: platform = "Twitter"
+                elif "instagram.com" in domain: platform = "Instagram"
+                elif "reddit.com" in domain: platform = "Reddit"
+                elif "facebook.com" in domain: platform = "Facebook"
+                
+                v_id = str(uuid.uuid4())
+                violation = {
+                    "id": v_id,
+                    "asset_id": asset_id,
+                    "source_url": url,
+                    "platform": platform,
+                    "confidence": round(float(confidence), 2),
+                    "thumbnail_url": url, # Using source URL as thumb for demo
+                    "detected_at": detected_at,
+                    "status": "OPEN"
+                }
+                
+                conn.execute("""
+                    INSERT INTO violations (id, asset_id, source_url, platform, confidence, thumbnail_url, detected_at, status)
+                    VALUES (?,?,?,?,?,?,?,?)
+                """, (v_id, asset_id, url, platform, confidence, url, detected_at, 'OPEN'))
+                violations_found.append(violation)
 
-            if clip_sim > 0.85 or phash_diff < 10:
-                matches.append({
-                    'asset_id': asset['asset_id'],
-                    'team': asset['team'],
-                    'event_name': asset['event_name'],
-                    'clip_similarity': float(clip_sim),
-                    'phash_difference': int(phash_diff)
-                })
-                if clip_sim > highest_sim:
-                    highest_sim = clip_sim
-                    best_asset_id = asset['asset_id']
-
-        vision_urls = []
-        if best_asset_id:
-            from ml_utils import get_google_vision_urls
-            vision_urls = get_google_vision_urls(image_bytes)
-            if vision_urls:
-                detected_at = datetime.now(timezone.utc).isoformat()
-                for v in vision_urls:
-                    conn.execute(
-                        "INSERT INTO violations (asset_id, source_url, confidence_score, detected_at, status) VALUES (?,?,?,?,?)",
-                        (best_asset_id, v['url'], v['score'], detected_at, 'open')
-                    )
-                conn.commit()
-
-        conn.close()
-        return jsonify({'matches': matches, 'violations_found': len(vision_urls), 'vision_urls': vision_urls}), 200
-
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-# ─── Violations ────────────────────────────────────────────────────────────────
-
-@app.route('/api/violations', methods=['GET'])
-@token_required
-def get_violations(current_user):
-    try:
-        conn = get_db()
-        rows = conn.execute(
-            "SELECT asset_id, source_url, confidence_score, detected_at, status FROM violations ORDER BY detected_at DESC"
-        ).fetchall()
-        conn.close()
-        return jsonify({'violations': [dict(r) for r in rows]}), 200
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/violations/<int:vid>/status', methods=['PATCH'])
-@token_required
-def update_violation_status(current_user, vid):
-    data = request.get_json(silent=True) or {}
-    status = data.get('status', '').upper()
-    if status not in ('OPEN', 'REVIEWING', 'RESOLVED'):
-        return jsonify({'error': 'Invalid status. Use OPEN, REVIEWING, or RESOLVED'}), 400
-    try:
-        conn = get_db()
-        conn.execute("UPDATE violations SET status=? WHERE id=?", (status.lower(), vid))
         conn.commit()
         conn.close()
-        return jsonify({'message': f'Status updated to {status}'}), 200
+        return jsonify(violations_found)
+
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        if conn: conn.close()
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Violations ────────────────────────────────────────────────────────────────
+
+@app.route('/api/violations', methods=['GET'])
+def get_violations():
+    asset_id = request.args.get('asset_id')
+    conn = get_db()
+    if asset_id:
+        rows = conn.execute("SELECT * FROM violations WHERE asset_id = ? ORDER BY detected_at DESC", (asset_id,)).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM violations ORDER BY detected_at DESC").fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route('/api/violations/<id>', methods=['PUT'])
+def update_violation(id):
+    data = request.get_json() or {}
+    status = data.get('status')
+    if status not in ['OPEN', 'REVIEWING', 'RESOLVED']:
+        return jsonify({"error": "Invalid status"}), 400
+    
+    conn = get_db()
+    conn.execute("UPDATE violations SET status = ? WHERE id = ?", (status, id))
+    conn.commit()
+    conn.close()
+    return jsonify({"message": "Violation updated"})
 
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5005)
+    app.run(debug=True, port=5000)

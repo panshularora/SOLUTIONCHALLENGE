@@ -1,6 +1,7 @@
 import sqlite3
+import os
 
-DB_NAME = 'app.db'
+DB_NAME = 'vigilant.db'
 
 def get_db():
     conn = sqlite3.connect(DB_NAME)
@@ -14,37 +15,33 @@ def init_db():
     # Table for registered assets
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS assets (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            asset_id TEXT UNIQUE NOT NULL,
+            id TEXT PRIMARY KEY,
             team TEXT,
             event_name TEXT,
+            image_path TEXT,
             phash TEXT,
-            clip_embedding TEXT,
-            registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            registered_at TEXT
         )
     ''')
     
     # Table for detected violations
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS violations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT PRIMARY KEY,
             asset_id TEXT,
             source_url TEXT,
-            confidence_score REAL,
-            detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            status TEXT DEFAULT 'pending',
-            FOREIGN KEY(asset_id) REFERENCES assets(asset_id)
-        )
-    ''')
-    
-    # Table for user authentication
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE,
-            password TEXT
+            platform TEXT,
+            confidence REAL,
+            thumbnail_url TEXT,
+            detected_at TEXT,
+            status TEXT DEFAULT 'OPEN',
+            FOREIGN KEY(asset_id) REFERENCES assets(id)
         )
     ''')
     
     conn.commit()
     conn.close()
+    
+    # Create uploads directory
+    if not os.path.exists('./uploads'):
+        os.makedirs('./uploads')
