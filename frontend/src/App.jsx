@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   LayoutDashboard, Image as ImageIcon, AlertTriangle, FileText,
-  Bell, Search, MoreVertical, ExternalLink, ShieldCheck, LogIn,
-  Loader2, Upload, Check, ScanLine
+  Bell, Search, MoreVertical, ExternalLink, ShieldCheck, LogOut, Loader2, Upload, Check, ScanLine, X
 } from 'lucide-react';
 
 const API = 'http://127.0.0.1:5005';
@@ -22,6 +21,130 @@ const Badge = ({ status }) => {
     <span className={`px-3 py-1 rounded-full text-[10px] font-bold tracking-wider uppercase ${map[norm] || map.OPEN}`}>
       {label}
     </span>
+  );
+};
+
+// ── Violation Drawer ──────────────────────────────────────────────────────────
+const ViolationDrawer = ({ violation, onClose }) => {
+  const [active, setActive] = useState(false);
+
+  useEffect(() => {
+    if (violation) {
+      setTimeout(() => setActive(true), 10);
+    } else {
+      setActive(false);
+    }
+  }, [violation]);
+
+  if (!violation) return null;
+
+  const conf = violation.confidence_score || 0;
+  const confPct = Math.round(conf * 100);
+  const confColor = conf > 0.85 ? 'text-rose-600' : conf >= 0.60 ? 'text-amber-600' : 'text-emerald-600';
+  
+  let hostname = violation.source_url || '';
+  let platform = 'UNKNOWN';
+  try {
+    const u = new URL(hostname.startsWith('http') ? hostname : `https://${hostname}`);
+    hostname = u.hostname;
+    platform = u.hostname.replace('www.', '').split('.')[0].toUpperCase();
+  } catch { }
+
+  return (
+    <div className="fixed inset-0 z-[100] overflow-hidden">
+      {/* Backdrop */}
+      <div 
+        className={`absolute inset-0 bg-slate-900/40 backdrop-blur-sm transition-opacity duration-300 ease-in-out ${active ? 'opacity-100' : 'opacity-0'}`}
+        onClick={() => { setActive(false); setTimeout(onClose, 300); }}
+      />
+      
+      {/* Drawer Panel */}
+      <div 
+        className={`absolute top-0 right-0 h-full w-[420px] bg-white shadow-2xl transition-transform duration-300 ease-in-out transform ${active ? 'translate-x-0' : 'translate-x-full'} overflow-y-auto border-l border-slate-100`}
+      >
+        <div className="p-8">
+          <div className="flex justify-between items-center mb-8">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center text-indigo-600">
+                <AlertTriangle size={18} />
+              </div>
+              <h2 className="text-xl font-bold text-slate-800 tracking-tight">Violation Detail</h2>
+            </div>
+            <button 
+              onClick={() => { setActive(false); setTimeout(onClose, 300); }}
+              className="p-2 hover:bg-slate-100 rounded-full text-slate-400 hover:text-slate-600 transition-colors"
+            >
+              <X size={20} />
+            </button>
+          </div>
+
+          <div className="w-full aspect-square rounded-2xl bg-slate-50 border border-slate-200 overflow-hidden mb-8 shadow-sm">
+            <img 
+              src={`https://picsum.photos/seed/${violation.asset_id}/600/600`} 
+              alt="Asset" 
+              className="w-full h-full object-cover"
+            />
+          </div>
+
+          <div className="space-y-7">
+            <div>
+              <label className="text-xs font-bold text-slate-400 uppercase tracking-widest block mb-2">Match Confidence</label>
+              <div className="flex items-baseline gap-2">
+                <span className={`text-6xl font-black tracking-tighter ${confColor}`}>{confPct}%</span>
+                <span className="text-slate-400 font-bold">likelihood</span>
+              </div>
+            </div>
+
+            <div>
+              <label className="text-xs font-bold text-slate-400 uppercase tracking-widest block mb-2">Detected Source</label>
+              <a 
+                href={violation.source_url} 
+                target="_blank" 
+                rel="noreferrer" 
+                className="text-indigo-600 font-semibold hover:underline flex items-center gap-2 group break-all leading-relaxed"
+              >
+                {violation.source_url}
+                <ExternalLink size={14} className="shrink-0" />
+              </a>
+            </div>
+
+            <div className="grid grid-cols-2 gap-6">
+              <div>
+                <label className="text-xs font-bold text-slate-400 uppercase tracking-widest block mb-2">Platform</label>
+                <span className="px-3 py-1.5 bg-slate-100 text-slate-600 text-xs font-bold rounded-lg tracking-wide inline-block">
+                  {platform}
+                </span>
+              </div>
+              <div>
+                <label className="text-xs font-bold text-slate-400 uppercase tracking-widest block mb-2">Status</label>
+                <Badge status={violation.status} />
+              </div>
+            </div>
+
+            <div>
+              <label className="text-xs font-bold text-slate-400 uppercase tracking-widest block mb-2">Detection Date</label>
+              <p className="text-slate-700 font-semibold">
+                {new Date(violation.detected_at).toLocaleString('en-US', {
+                  weekday: 'short', month: 'long', day: 'numeric', year: 'numeric',
+                  hour: '2-digit', minute: '2-digit'
+                })}
+              </p>
+            </div>
+
+            <div className="pt-8 space-y-4">
+              <button className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-lg shadow-emerald-200 transition-all flex items-center justify-center gap-3">
+                <Check size={20} strokeWidth={3} />
+                Mark as Resolved
+              </button>
+              <button className="w-full py-4 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl shadow-lg shadow-rose-200 transition-all flex items-center justify-center gap-3">
+                <AlertTriangle size={20} strokeWidth={3} />
+                Escalate to Legal
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 };
 
@@ -89,7 +212,7 @@ const ScanOverlay = ({ visible, onComplete }) => {
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 36 }}>
           <div style={{
             width: 44, height: 44, borderRadius: 12,
-            background: BRAND, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: BRAND, display: 'flex', alignItems: 'center', justifySelf: 'center', justifyContent: 'center',
           }}>
             <ScanLine size={22} color="#fff" strokeWidth={2.5} />
           </div>
@@ -303,6 +426,7 @@ const Dashboard = ({ token, onLogout }) => {
   const [loading, setLoading] = useState(true);
   const [activeNav, setActiveNav] = useState('Violations');
   const [scanFlash, setScanFlash] = useState(false);
+  const [selectedViolation, setSelectedViolation] = useState(null);
 
   const headers = { Authorization: `Bearer ${token}` };
 
@@ -464,7 +588,11 @@ const Dashboard = ({ token, onLogout }) => {
                       const barColor = conf > 0.9 ? '#ef4444' : conf > 0.7 ? '#f59e0b' : '#10b981';
 
                       return (
-                        <tr key={i} className="hover:bg-slate-50 transition-colors group">
+                        <tr 
+                          key={i} 
+                          className="hover:bg-slate-50 transition-colors group cursor-pointer"
+                          onClick={() => setSelectedViolation(v)}
+                        >
                           <td className="px-6 py-4">
                             <div className="flex items-center gap-3">
                               <div className="w-10 h-10 rounded-lg bg-slate-100 border border-slate-200 overflow-hidden shrink-0">
@@ -475,7 +603,9 @@ const Dashboard = ({ token, onLogout }) => {
                           </td>
                           <td className="px-6 py-4 max-w-[180px]">
                             <a href={v.source_url} target="_blank" rel="noreferrer"
-                              className="text-indigo-600 font-medium hover:underline flex items-center gap-1 truncate text-xs">
+                              className="text-indigo-600 font-medium hover:underline flex items-center gap-1 truncate text-xs"
+                              onClick={(e) => e.stopPropagation()}
+                            >
                               {hostname}
                               <ExternalLink size={11} className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
                             </a>
@@ -510,6 +640,12 @@ const Dashboard = ({ token, onLogout }) => {
           </div>
         </div>
       </main>
+
+      {/* Violation Detail Drawer */}
+      <ViolationDrawer 
+        violation={selectedViolation} 
+        onClose={() => setSelectedViolation(null)} 
+      />
     </div>
   );
 };
